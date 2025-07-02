@@ -14,9 +14,15 @@
 #include <assert.h>
 #include <unistd.h>
 #include <string.h>
+#include <stdint.h>
 
 #include "mm.h"
 #include "memlib.h"
+
+static void *extend_heap(size_t words);
+static void *coalesce(void *bp);
+static void *find_fit(size_t asize);
+static void place(void *bp, size_t asize);
 
 //상수/매크로 정의
 #define WSIZE 4 
@@ -57,7 +63,7 @@ team_t team = {
     /* First member's email address */
     "kmj6386@gmail.com",
     /* Second member's full name (leave blank if none) */
-    "이지윤",
+    "",
     /* Second member's email address (leave blank if none) */
     ""};
 
@@ -65,7 +71,7 @@ team_t team = {
 #define ALIGNMENT 8
 
 /* rounds up to the nearest multiple of ALIGNMENT */
-#define ALIGN(size) (((size) + (ALIGNMENT - 1)) & ~0x7)
+#define ALIGN(size) (((size) + (ALIGNMENT - 1)) & ~0x7) //malloc()에서 이걸 쓰면 더 빨라질 것으로 생각됨
 
 #define SIZE_T_SIZE (ALIGN(sizeof(size_t)))
 
@@ -196,9 +202,73 @@ void mm_free(void *ptr)
     coalesce(ptr); //병합
 }
 
+//first_fit
+// static void *find_fit(size_t asize)
+// {
+//     char *bp = heap_listp; //앞부터 탐색
+
+//     //종료조건 : 에필로그 블록을 만나기 전까지 
+//     while (GET_SIZE(HDRP(bp)) > 0)
+//     {
+//         if (GET_SIZE(HDRP(bp)) >= asize && !GET_ALLOC(HDRP(bp))) //asize가 적당한 크기를 찾았고, ALLOC이 0이라면 
+//         {
+//             return bp;
+//         }
+//         bp = NEXT_BLKP(bp); //bp는 다음 블럭으로 이동
+//     }
+//     return NULL; //못찾았으면 NULL반환
+// }
+
+//best_fit 청크사이즈를 줄이면 빨라진다는 소문이....
 static void *find_fit(size_t asize)
 {
+    char *bp = heap_listp; 
+    size_t min_diff = SIZE_MAX; //최소 블록 크기 
+    void *best_bp = NULL;
+
+    //에필로그 까지 탐색
+    while (GET_SIZE(HDRP(bp)) > 0)
+  {
+        //크기가 asize이상이고, free 상태인 블록
+        if (GET_SIZE(HDRP(bp)) >= asize && !GET_ALLOC(HDRP(bp))){    
+            size_t diff = GET_SIZE(HDRP(bp)) - asize; //블록의 차를 diff에 저장
+            
+            //들어온 diff가 min보다 작다면
+            if (diff <= min_diff) 
+            {
+                min_diff = diff; //min갱신
+                best_bp = bp; //best_bp 갱신
+
+            if (diff == 0){ //맞는 블럭찾으면 바로 return
+                return best_bp;
+            }
+            }
+        }
+        bp = NEXT_BLKP(bp); //못 찾았으면 다음 블록 이동
+    }
+    return best_bp; //최소 블록 반환
+}
+//적당한 가용블록 찾았을 때, 그 블록을 실제 요청한 크기로 할당 상태로 바꿔줌
+static void place(void *bp, size_t asize)
+{
+    size_t csize = GET_SIZE(HDRP(bp)); //현재 블록 크기
     
+    //분할이 가능한지 확인 (최소 블록 크기 이상 남을 때)
+    //asize와 (csize-asize)로 분할
+    if (csize - asize >= (2*DSIZE))
+    {
+        PUT(HDRP(bp), PACK(asize, 1)); //헤더에 할당표시
+        PUT(FTRP(bp), PACK(asize, 1)); //푸터에 할당표시
+
+        //나머지 부분을 free블록으로 만들기
+        void *new_bp = NEXT_BLKP(bp);
+        PUT(HDRP(new_bp), PACK(csize - asize, 0)); //free헤더
+        PUT(FTRP(new_bp), PACK(csize - asize, 0)); //free푸터
+    } else //분할 x,전체 블록 csize할당
+    {
+        PUT(HDRP(bp), PACK(csize,1)); //헤더에 할당표시
+        PUT(FTRP(bp), PACK(csize,1)); //푸터에 할당표시
+    }
 }
 /*
  * mm_realloc - Implemented simply in terms of mm_malloc and mm_free
